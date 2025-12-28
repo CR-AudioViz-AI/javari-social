@@ -1,869 +1,386 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef } from 'react'
 import { 
-  Image as ImageIcon, Type, Square, Circle, Download, Save, Palette,
-  Upload, Layers, Trash2, Copy, AlignLeft, AlignCenter, AlignRight,
-  Bold, Italic, ZoomIn, ZoomOut, Eye, Grid
+  Image, Upload, Download, Wand2, Layers, 
+  Type, Palette, Grid, Maximize2, Eraser,
+  Share2, Save, Undo, Redo, ZoomIn, ZoomOut
 } from 'lucide-react'
-import { PLATFORM_SIZES, CanvasElement, TextElement, ImageElement, ShapeElement, SocialPlatform, Template } from '@/types/graphics'
-import { TEMPLATE_LIBRARY, getTemplatesByPlatform } from '@/lib/templates'
-import { supabase } from '@/lib/supabase'
-import { toPng } from 'html-to-image'
-import { saveAs } from 'file-saver'
 
-export default function GraphicsCreator() {
-  // State management
-  const [selectedPlatform, setSelectedPlatform] = useState<SocialPlatform>('instagram-post')
-  const [selectedTemplate, setSelectedTemplate] = useState<Template | null>(null)
+// Import all new components
+import MagicResize from '@/components/MagicResize'
+import TemplateLibrary from '@/components/TemplateLibrary'
+import BackgroundRemover from '@/components/BackgroundRemover'
+
+type ActiveTool = 'canvas' | 'templates' | 'resize' | 'background' | 'export'
+
+interface CanvasElement {
+  id: string
+  type: 'text' | 'image' | 'shape'
+  x: number
+  y: number
+  width: number
+  height: number
+  content: string
+  style: Record<string, any>
+}
+
+export default function SocialGraphicsPage() {
+  const [activeTool, setActiveTool] = useState<ActiveTool>('canvas')
+  const [canvasImage, setCanvasImage] = useState<string | null>(null)
   const [elements, setElements] = useState<CanvasElement[]>([])
   const [selectedElement, setSelectedElement] = useState<string | null>(null)
-  const [background, setBackground] = useState<Template['background']>({
-    type: 'color',
-    value: '#FFFFFF'
-  })
-  const [designName, setDesignName] = useState('Untitled Design')
-  const [tool, setTool] = useState<'select' | 'text' | 'image' | 'shape'>('select')
-  const [zoom, setZoom] = useState(1)
-  const [saving, setSaving] = useState(false)
-  const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null)
+  const [canvasSize, setCanvasSize] = useState({ width: 1080, height: 1080 })
+  const [zoom, setZoom] = useState(100)
+  const [history, setHistory] = useState<string[]>([])
+  const [historyIndex, setHistoryIndex] = useState(-1)
   
-  const canvasRef = useRef<HTMLDivElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Get current platform dimensions
-  const currentSize = PLATFORM_SIZES[selectedPlatform]
-
-  // Load template when selected
-  useEffect(() => {
-    if (selectedTemplate) {
-      setElements([...selectedTemplate.elements])
-      setBackground(selectedTemplate.background)
-      setDesignName(selectedTemplate.name)
-    }
-  }, [selectedTemplate])
-
-  // Handle platform change
-  function handlePlatformChange(platform: SocialPlatform) {
-    setSelectedPlatform(platform)
-    setSelectedTemplate(null)
-    setElements([])
-    setBackground({ type: 'color', value: '#FFFFFF' })
-  }
-
-  // Add text element
-  function addText() {
-    const newText: TextElement = {
-      id: `text-${Date.now()}`,
-      type: 'text',
-      content: 'Double click to edit',
-      x: currentSize.width / 2,
-      y: currentSize.height / 2,
-      fontSize: 48,
-      fontFamily: 'Arial',
-      fontWeight: 'bold',
-      color: '#000000',
-      align: 'center'
-    }
-    setElements([...elements, newText])
-    setSelectedElement(newText.id)
-    setTool('select')
-  }
-
-  // Add image
-  function handleImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
+  // Handle image upload
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (!file) return
-
-    const reader = new FileReader()
-    reader.onload = (event) => {
-      const img = new Image()
-      img.onload = () => {
-        const newImage: ImageElement = {
-          id: `image-${Date.now()}`,
-          type: 'image',
-          src: event.target?.result as string,
-          x: currentSize.width / 2,
-          y: currentSize.height / 2,
-          width: Math.min(img.width, currentSize.width * 0.8),
-          height: Math.min(img.height, currentSize.height * 0.8),
-          opacity: 1
-        }
-        setElements([...elements, newImage])
-        setSelectedElement(newImage.id)
-        setTool('select')
+    if (file) {
+      const reader = new FileReader()
+      reader.onload = (e) => {
+        setCanvasImage(e.target?.result as string)
       }
-      img.src = event.target?.result as string
-    }
-    reader.readAsDataURL(file)
-  }
-
-  // Add shape
-  function addShape(shapeType: 'rectangle' | 'circle') {
-    const newShape: ShapeElement = {
-      id: `shape-${Date.now()}`,
-      type: shapeType,
-      x: currentSize.width / 2,
-      y: currentSize.height / 2,
-      width: 200,
-      height: 200,
-      fill: '#00CED1',
-      opacity: 1
-    }
-    setElements([...elements, newShape])
-    setSelectedElement(newShape.id)
-    setTool('select')
-  }
-
-  // Update element
-  function updateElement(id: string, updates: Partial<CanvasElement>) {
-    setElements(elements.map(el => 
-      el.id === id ? { ...el, ...updates } : el
-    ))
-  }
-
-  // Delete element
-  function deleteElement(id: string) {
-    setElements(elements.filter(el => el.id !== id))
-    if (selectedElement === id) {
-      setSelectedElement(null)
+      reader.readAsDataURL(file)
     }
   }
 
-  // Duplicate element
-  function duplicateElement(id: string) {
-    const element = elements.find(el => el.id === id)
-    if (!element) return
+  // Handle template selection
+  const handleTemplateSelect = (template: any) => {
+    // Apply template colors and create base design
+    const canvas = document.createElement('canvas')
+    canvas.width = canvasSize.width
+    canvas.height = canvasSize.height
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
 
-    const newElement = {
-      ...element,
-      id: `${element.type}-${Date.now()}`,
-      x: element.x + 20,
-      y: element.y + 20
-    }
-    setElements([...elements, newElement])
-    setSelectedElement(newElement.id)
+    // Create gradient background from template
+    const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height)
+    gradient.addColorStop(0, template.colors[0])
+    gradient.addColorStop(1, template.colors[1])
+    ctx.fillStyle = gradient
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+    setCanvasImage(canvas.toDataURL())
+    setActiveTool('canvas')
   }
 
-  // Move element up/down in layers
-  function moveLayer(id: string, direction: 'up' | 'down') {
-    const index = elements.findIndex(el => el.id === id)
-    if (index === -1) return
-
-    const newElements = [...elements]
-    if (direction === 'up' && index < elements.length - 1) {
-      [newElements[index], newElements[index + 1]] = [newElements[index + 1], newElements[index]]
-    } else if (direction === 'down' && index > 0) {
-      [newElements[index], newElements[index - 1]] = [newElements[index - 1], newElements[index]]
-    }
-    setElements(newElements)
+  // Handle magic resize complete
+  const handleResizeComplete = (images: any[]) => {
+    // Images are ready for download
+    console.log('Resized images:', images)
   }
 
-  // Export as image
-  async function exportImage(format: 'png' | 'jpg' = 'png') {
-    if (!canvasRef.current) return
-
-    try {
-      const dataUrl = await toPng(canvasRef.current, {
-        quality: 1,
-        pixelRatio: 2,
-        width: currentSize.width,
-        height: currentSize.height
-      })
-
-      const blob = await (await fetch(dataUrl)).blob()
-      saveAs(blob, `${designName.replace(/\s+/g, '-').toLowerCase()}.${format}`)
-
-      setMessage({ type: 'success', text: `Exported as ${format.toUpperCase()}!` })
-      setTimeout(() => setMessage(null), 3000)
-    } catch (error) {
-      setMessage({ type: 'error', text: 'Export failed. Please try again.' })
-      setTimeout(() => setMessage(null), 5000)
-    }
+  // Handle background removal
+  const handleBackgroundRemoved = (imageUrl: string) => {
+    setCanvasImage(imageUrl)
+    setActiveTool('canvas')
   }
 
-  // Save design to database
-  async function saveDesign() {
-    setSaving(true)
-    try {
-      // Deduct credits (15 credits per save)
-      const creditCost = 15
+  // Export canvas
+  const exportCanvas = (format: 'png' | 'jpg' | 'webp') => {
+    const canvas = canvasRef.current
+    if (!canvas || !canvasImage) return
 
-      const designData = {
-        name: designName,
-        platform: selectedPlatform,
-        elements: JSON.stringify(elements),
-        background: JSON.stringify(background),
-        updated_at: new Date().toISOString()
-      }
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
 
-      const { error } = await supabase
-        .from('designs')
-        .insert([designData])
-
-      if (error) throw error
-
-      setMessage({ type: 'success', text: 'Design saved successfully!' })
-      setTimeout(() => setMessage(null), 3000)
-    } catch (error: any) {
-      setMessage({ type: 'error', text: error.message || 'Failed to save design' })
-      setTimeout(() => setMessage(null), 5000)
-    } finally {
-      setSaving(false)
+    // Draw current state
+    const img = new window.Image()
+    img.onload = () => {
+      canvas.width = canvasSize.width
+      canvas.height = canvasSize.height
+      ctx.drawImage(img, 0, 0, canvasSize.width, canvasSize.height)
+      
+      // Download
+      const link = document.createElement('a')
+      link.download = `social-graphic-${Date.now()}.${format}`
+      link.href = canvas.toDataURL(`image/${format}`, 0.95)
+      link.click()
     }
+    img.src = canvasImage
   }
 
-  // Get selected element
-  const selectedEl = selectedElement ? elements.find(el => el.id === selectedElement) : null
+  const tools = [
+    { id: 'canvas', label: 'Canvas', icon: Layers },
+    { id: 'templates', label: 'Templates', icon: Grid },
+    { id: 'resize', label: 'Magic Resize', icon: Maximize2 },
+    { id: 'background', label: 'Remove BG', icon: Eraser },
+    { id: 'export', label: 'Export', icon: Download },
+  ]
 
-  // Render background
-  function renderBackground() {
-    if (background.type === 'color') {
-      return { backgroundColor: background.value as string }
-    } else if (background.type === 'gradient' && typeof background.value === 'object') {
-      const grad = background.value as { start: string; end: string; direction: string }
-      return { 
-        backgroundImage: `linear-gradient(${grad.direction}, ${grad.start}, ${grad.end})`
-      }
-    }
-    return {}
-  }
+  const presetSizes = [
+    { name: 'Instagram Post', width: 1080, height: 1080 },
+    { name: 'Instagram Story', width: 1080, height: 1920 },
+    { name: 'Facebook Post', width: 1200, height: 630 },
+    { name: 'Twitter Post', width: 1200, height: 675 },
+    { name: 'LinkedIn Post', width: 1200, height: 627 },
+    { name: 'YouTube Thumbnail', width: 1280, height: 720 },
+  ]
 
   return (
-    <div className="h-screen flex flex-col">
+    <div className="min-h-screen bg-gray-100 dark:bg-gray-950">
       {/* Header */}
-      <header className="bg-white border-b border-gray-200 px-6 py-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <div className="p-2 bg-primary rounded-lg">
-              <ImageIcon className="w-6 h-6 text-white" />
+      <header className="bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800">
+        <div className="max-w-7xl mx-auto px-4 py-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-gradient-to-br from-pink-500 to-purple-600 rounded-xl flex items-center justify-center">
+                <Image className="w-6 h-6 text-white" />
+              </div>
+              <div>
+                <h1 className="text-xl font-bold text-gray-900 dark:text-white">Social Graphics Creator</h1>
+                <p className="text-sm text-gray-500">Create stunning social media graphics</p>
+              </div>
             </div>
-            <div>
-              <input
-                type="text"
-                value={designName}
-                onChange={(e) => setDesignName(e.target.value)}
-                className="text-xl font-bold text-gray-900 border-none outline-none focus:ring-2 focus:ring-primary rounded px-2"
-              />
-              <p className="text-sm text-gray-600">{currentSize.label}</p>
+            
+            <div className="flex items-center gap-3">
+              {/* Zoom Controls */}
+              <div className="flex items-center gap-2 bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
+                <button onClick={() => setZoom(Math.max(25, zoom - 25))} className="p-1.5 hover:bg-gray-200 dark:hover:bg-gray-700 rounded">
+                  <ZoomOut className="w-4 h-4" />
+                </button>
+                <span className="text-sm font-medium w-12 text-center">{zoom}%</span>
+                <button onClick={() => setZoom(Math.min(200, zoom + 25))} className="p-1.5 hover:bg-gray-200 dark:hover:bg-gray-700 rounded">
+                  <ZoomIn className="w-4 h-4" />
+                </button>
+              </div>
+              
+              {/* Undo/Redo */}
+              <div className="flex items-center gap-1">
+                <button disabled={historyIndex <= 0} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg disabled:opacity-50">
+                  <Undo className="w-5 h-5" />
+                </button>
+                <button disabled={historyIndex >= history.length - 1} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg disabled:opacity-50">
+                  <Redo className="w-5 h-5" />
+                </button>
+              </div>
+              
+              <button 
+                onClick={() => exportCanvas('png')}
+                className="bg-gradient-to-r from-pink-500 to-purple-600 hover:from-pink-600 hover:to-purple-700 text-white px-4 py-2 rounded-lg flex items-center gap-2"
+              >
+                <Download className="w-4 h-4" />
+                Export
+              </button>
             </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <button onClick={() => exportImage('png')} className="btn-outline flex items-center gap-2">
-              <Download className="w-5 h-5" />
-              Export PNG
-            </button>
-            <button 
-              onClick={saveDesign}
-              disabled={saving}
-              className="btn-primary flex items-center gap-2"
-            >
-              <Save className="w-5 h-5" />
-              {saving ? 'Saving...' : 'Save (15 credits)'}
-            </button>
           </div>
         </div>
-
-        {/* Message Alert */}
-        {message && (
-          <div className={`mt-4 p-3 rounded-lg ${
-            message.type === 'success' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'
-          }`}>
-            {message.text}
-          </div>
-        )}
       </header>
 
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left Sidebar - Platform & Templates */}
-        <aside className="w-80 bg-white border-r border-gray-200 overflow-y-auto custom-scrollbar">
-          <div className="p-6 space-y-6">
-            {/* Platform Selection */}
-            <div>
-              <h3 className="text-lg font-bold text-gray-900 mb-3">Platform</h3>
-              <select
-                value={selectedPlatform}
-                onChange={(e) => handlePlatformChange(e.target.value as SocialPlatform)}
-                className="input-field"
-              >
-                <optgroup label="Instagram">
-                  <option value="instagram-post">Instagram Post (1:1)</option>
-                  <option value="instagram-story">Instagram Story (9:16)</option>
-                  <option value="instagram-reel">Instagram Reel (9:16)</option>
-                </optgroup>
-                <optgroup label="Facebook">
-                  <option value="facebook-post">Facebook Post</option>
-                  <option value="facebook-cover">Facebook Cover</option>
-                </optgroup>
-                <optgroup label="Twitter">
-                  <option value="twitter-post">Twitter Post</option>
-                  <option value="twitter-header">Twitter Header</option>
-                </optgroup>
-                <optgroup label="LinkedIn">
-                  <option value="linkedin-post">LinkedIn Post</option>
-                  <option value="linkedin-cover">LinkedIn Cover</option>
-                </optgroup>
-                <optgroup label="Other">
-                  <option value="youtube-thumbnail">YouTube Thumbnail</option>
-                  <option value="pinterest-pin">Pinterest Pin</option>
-                </optgroup>
-              </select>
-            </div>
-
-            {/* Templates */}
-            <div>
-              <h3 className="text-lg font-bold text-gray-900 mb-3">Templates</h3>
-              <div className="grid grid-cols-2 gap-3">
-                {getTemplatesByPlatform(selectedPlatform).map(template => (
-                  <button
-                    key={template.id}
-                    onClick={() => setSelectedTemplate(template)}
-                    className={`aspect-square rounded-lg border-2 transition-all ${
-                      selectedTemplate?.id === template.id
-                        ? 'border-primary shadow-lg'
-                        : 'border-gray-200 hover:border-gray-300'
-                    }`}
-                    style={{
-                      ...(template.background.type === 'color' 
-                        ? { backgroundColor: template.background.value as string }
-                        : { 
-                            backgroundImage: `linear-gradient(135deg, ${
-                              (template.background.value as any).start
-                            }, ${(template.background.value as any).end})`
-                          }
-                      )
-                    }}
-                  >
-                    <div className="p-2 text-center">
-                      <p className="text-xs font-semibold text-white drop-shadow-lg">
-                        {template.name}
-                      </p>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        </aside>
-
-        {/* Center - Canvas */}
-        <main className="flex-1 flex flex-col items-center justify-center bg-gray-100 p-8 overflow-auto">
-          <div 
-            ref={canvasRef}
-            className="canvas-container relative"
-            style={{
-              width: currentSize.width,
-              height: currentSize.height,
-              transform: `scale(${zoom})`,
-              transformOrigin: 'center',
-              ...renderBackground()
-            }}
-          >
-            {/* Render elements */}
-            {elements.map(element => {
-              if (element.type === 'text') {
-                const textEl = element as TextElement
-                return (
-                  <div
-                    key={element.id}
-                    onClick={() => setSelectedElement(element.id)}
-                    onDoubleClick={() => {
-                      const newContent = prompt('Edit text:', textEl.content)
-                      if (newContent) updateElement(element.id, { content: newContent })
-                    }}
-                    className={`absolute cursor-move ${
-                      selectedElement === element.id ? 'ring-2 ring-primary' : ''
-                    }`}
-                    style={{
-                      left: textEl.x,
-                      top: textEl.y,
-                      transform: 'translate(-50%, -50%)',
-                      fontSize: textEl.fontSize,
-                      fontFamily: textEl.fontFamily,
-                      fontWeight: textEl.fontWeight,
-                      color: textEl.color,
-                      textAlign: textEl.align,
-                      maxWidth: textEl.maxWidth,
-                      whiteSpace: 'pre-wrap',
-                      wordWrap: 'break-word'
-                    }}
-                  >
-                    {textEl.content}
-                  </div>
-                )
-              }
-
-              if (element.type === 'image') {
-                const imgEl = element as ImageElement
-                return (
-                  <img
-                    key={element.id}
-                    src={imgEl.src}
-                    onClick={() => setSelectedElement(element.id)}
-                    className={`absolute cursor-move ${
-                      selectedElement === element.id ? 'ring-2 ring-primary' : ''
-                    }`}
-                    style={{
-                      left: imgEl.x,
-                      top: imgEl.y,
-                      width: imgEl.width,
-                      height: imgEl.height,
-                      transform: 'translate(-50%, -50%)',
-                      opacity: imgEl.opacity
-                    }}
-                    alt="User uploaded"
-                  />
-                )
-              }
-
-              if (element.type === 'rectangle' || element.type === 'circle') {
-                const shapeEl = element as ShapeElement
-                return (
-                  <div
-                    key={element.id}
-                    onClick={() => setSelectedElement(element.id)}
-                    className={`absolute cursor-move ${
-                      selectedElement === element.id ? 'ring-2 ring-primary' : ''
-                    }`}
-                    style={{
-                      left: shapeEl.x,
-                      top: shapeEl.y,
-                      width: shapeEl.width,
-                      height: shapeEl.height,
-                      transform: 'translate(-50%, -50%)',
-                      backgroundColor: shapeEl.fill,
-                      opacity: shapeEl.opacity,
-                      borderRadius: element.type === 'circle' ? '50%' : '0'
-                    }}
-                  />
-                )
-              }
-
-              return null
-            })}
-          </div>
-
-          {/* Zoom controls */}
-          <div className="mt-4 flex items-center gap-2">
+      <div className="flex">
+        {/* Left Sidebar - Tools */}
+        <div className="w-16 bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-800 flex flex-col items-center py-4 gap-2">
+          {tools.map(tool => (
             <button
-              onClick={() => setZoom(Math.max(0.25, zoom - 0.25))}
-              className="tool-btn"
+              key={tool.id}
+              onClick={() => setActiveTool(tool.id as ActiveTool)}
+              className={`w-12 h-12 flex flex-col items-center justify-center rounded-xl transition-colors ${
+                activeTool === tool.id
+                  ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-600'
+                  : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800'
+              }`}
+              title={tool.label}
             >
-              <ZoomOut className="w-5 h-5" />
+              <tool.icon className="w-5 h-5" />
+              <span className="text-[10px] mt-0.5">{tool.label}</span>
             </button>
-            <span className="text-sm font-semibold">{Math.round(zoom * 100)}%</span>
-            <button
-              onClick={() => setZoom(Math.min(2, zoom + 0.25))}
-              className="tool-btn"
-            >
-              <ZoomIn className="w-5 h-5" />
-            </button>
-          </div>
-        </main>
+          ))}
+        </div>
 
-        {/* Right Sidebar - Tools & Properties */}
-        <aside className="w-80 bg-white border-l border-gray-200 overflow-y-auto custom-scrollbar">
-          <div className="p-6 space-y-6">
-            {/* Tools */}
-            <div>
-              <h3 className="text-lg font-bold text-gray-900 mb-3">Tools</h3>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={addText}
-                  className="tool-btn flex-col gap-1"
-                >
-                  <Type className="w-6 h-6" />
-                  <span className="text-xs">Text</span>
-                </button>
-
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  className="tool-btn flex-col gap-1"
-                >
-                  <Upload className="w-6 h-6" />
-                  <span className="text-xs">Image</span>
-                </button>
-
-                <button
-                  onClick={() => addShape('rectangle')}
-                  className="tool-btn flex-col gap-1"
-                >
-                  <Square className="w-6 h-6" />
-                  <span className="text-xs">Rectangle</span>
-                </button>
-
-                <button
-                  onClick={() => addShape('circle')}
-                  className="tool-btn flex-col gap-1"
-                >
-                  <Circle className="w-6 h-6" />
-                  <span className="text-xs">Circle</span>
-                </button>
-              </div>
-
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                onChange={handleImageUpload}
-                className="hidden"
-              />
-            </div>
-
-            {/* Element Properties */}
-            {selectedEl && (
-              <div>
-                <h3 className="text-lg font-bold text-gray-900 mb-3">Properties</h3>
-                
-                {/* Common actions */}
-                <div className="space-y-2 mb-4">
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => duplicateElement(selectedEl.id)}
-                      className="flex-1 btn-outline flex items-center justify-center gap-2 py-2"
-                    >
-                      <Copy className="w-4 h-4" />
-                      Duplicate
-                    </button>
-                    <button
-                      onClick={() => deleteElement(selectedEl.id)}
-                      className="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                      Delete
-                    </button>
-                  </div>
-
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => moveLayer(selectedEl.id, 'up')}
-                      className="flex-1 tool-btn"
-                    >
-                      ↑ Forward
-                    </button>
-                    <button
-                      onClick={() => moveLayer(selectedEl.id, 'down')}
-                      className="flex-1 tool-btn"
-                    >
-                      ↓ Back
-                    </button>
-                  </div>
-                </div>
-
-                {/* Text properties */}
-                {selectedEl.type === 'text' && (
-                  <div className="space-y-3">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Font Size
-                      </label>
-                      <input
-                        type="number"
-                        value={(selectedEl as TextElement).fontSize}
-                        onChange={(e) => updateElement(selectedEl.id, { fontSize: parseInt(e.target.value) })}
-                        className="input-field"
-                        min="8"
-                        max="200"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Font Weight
-                      </label>
-                      <select
-                        value={(selectedEl as TextElement).fontWeight}
-                        onChange={(e) => updateElement(selectedEl.id, { fontWeight: e.target.value })}
-                        className="input-field"
-                      >
-                        <option value="normal">Normal</option>
-                        <option value="600">Semi Bold</option>
-                        <option value="bold">Bold</option>
-                        <option value="800">Extra Bold</option>
-                        <option value="900">Black</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Color
-                      </label>
-                      <input
-                        type="color"
-                        value={(selectedEl as TextElement).color}
-                        onChange={(e) => updateElement(selectedEl.id, { color: e.target.value })}
-                        className="w-full h-12 rounded-lg cursor-pointer"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Alignment
-                      </label>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => updateElement(selectedEl.id, { align: 'left' })}
-                          className={
-                            (selectedEl as TextElement).align === 'left'
-                              ? 'tool-btn-active flex-1'
-                              : 'tool-btn flex-1'
-                          }
-                        >
-                          <AlignLeft className="w-5 h-5" />
-                        </button>
-                        <button
-                          onClick={() => updateElement(selectedEl.id, { align: 'center' })}
-                          className={
-                            (selectedEl as TextElement).align === 'center'
-                              ? 'tool-btn-active flex-1'
-                              : 'tool-btn flex-1'
-                          }
-                        >
-                          <AlignCenter className="w-5 h-5" />
-                        </button>
-                        <button
-                          onClick={() => updateElement(selectedEl.id, { align: 'right' })}
-                          className={
-                            (selectedEl as TextElement).align === 'right'
-                              ? 'tool-btn-active flex-1'
-                              : 'tool-btn flex-1'
-                          }
-                        >
-                          <AlignRight className="w-5 h-5" />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Image properties */}
-                {selectedEl.type === 'image' && (
-                  <div className="space-y-3">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Opacity
-                      </label>
-                      <input
-                        type="range"
-                        min="0"
-                        max="1"
-                        step="0.1"
-                        value={(selectedEl as ImageElement).opacity}
-                        onChange={(e) => updateElement(selectedEl.id, { opacity: parseFloat(e.target.value) })}
-                        className="w-full"
-                      />
-                      <div className="text-center text-sm text-gray-600 mt-1">
-                        {Math.round((selectedEl as ImageElement).opacity * 100)}%
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Width
-                      </label>
-                      <input
-                        type="number"
-                        value={(selectedEl as ImageElement).width}
-                        onChange={(e) => updateElement(selectedEl.id, { width: parseInt(e.target.value) })}
-                        className="input-field"
-                        min="50"
-                        max={currentSize.width}
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Height
-                      </label>
-                      <input
-                        type="number"
-                        value={(selectedEl as ImageElement).height}
-                        onChange={(e) => updateElement(selectedEl.id, { height: parseInt(e.target.value) })}
-                        className="input-field"
-                        min="50"
-                        max={currentSize.height}
-                      />
-                    </div>
-                  </div>
-                )}
-
-                {/* Shape properties */}
-                {(selectedEl.type === 'rectangle' || selectedEl.type === 'circle') && (
-                  <div className="space-y-3">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Fill Color
-                      </label>
-                      <input
-                        type="color"
-                        value={(selectedEl as ShapeElement).fill}
-                        onChange={(e) => updateElement(selectedEl.id, { fill: e.target.value })}
-                        className="w-full h-12 rounded-lg cursor-pointer"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Opacity
-                      </label>
-                      <input
-                        type="range"
-                        min="0"
-                        max="1"
-                        step="0.1"
-                        value={(selectedEl as ShapeElement).opacity}
-                        onChange={(e) => updateElement(selectedEl.id, { opacity: parseFloat(e.target.value) })}
-                        className="w-full"
-                      />
-                      <div className="text-center text-sm text-gray-600 mt-1">
-                        {Math.round((selectedEl as ShapeElement).opacity * 100)}%
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Width
-                      </label>
-                      <input
-                        type="number"
-                        value={(selectedEl as ShapeElement).width}
-                        onChange={(e) => updateElement(selectedEl.id, { width: parseInt(e.target.value) })}
-                        className="input-field"
-                        min="10"
-                        max={currentSize.width}
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Height
-                      </label>
-                      <input
-                        type="number"
-                        value={(selectedEl as ShapeElement).height}
-                        onChange={(e) => updateElement(selectedEl.id, { height: parseInt(e.target.value) })}
-                        className="input-field"
-                        min="10"
-                        max={currentSize.height}
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Background Settings */}
-            <div>
-              <h3 className="text-lg font-bold text-gray-900 mb-3">Background</h3>
-              <div className="space-y-3">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Type
-                  </label>
-                  <select
-                    value={background.type}
-                    onChange={(e) => {
-                      if (e.target.value === 'color') {
-                        setBackground({ type: 'color', value: '#FFFFFF' })
-                      } else {
-                        setBackground({
-                          type: 'gradient',
-                          value: { start: '#667eea', end: '#764ba2', direction: '135deg' }
-                        })
-                      }
+        {/* Main Content */}
+        <div className="flex-1 p-6">
+          {/* Canvas Tool */}
+          {activeTool === 'canvas' && (
+            <div className="flex gap-6">
+              {/* Canvas Area */}
+              <div className="flex-1 flex items-center justify-center bg-gray-200 dark:bg-gray-800 rounded-xl p-8 min-h-[600px]">
+                {canvasImage ? (
+                  <div 
+                    className="relative bg-white shadow-xl"
+                    style={{ 
+                      width: canvasSize.width * (zoom / 100) / 2,
+                      height: canvasSize.height * (zoom / 100) / 2
                     }}
-                    className="input-field"
                   >
-                    <option value="color">Solid Color</option>
-                    <option value="gradient">Gradient</option>
-                  </select>
-                </div>
-
-                {background.type === 'color' && (
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Color
-                    </label>
-                    <input
-                      type="color"
-                      value={background.value as string}
-                      onChange={(e) => setBackground({ type: 'color', value: e.target.value })}
-                      className="w-full h-12 rounded-lg cursor-pointer"
+                    <img 
+                      src={canvasImage} 
+                      alt="Canvas" 
+                      className="w-full h-full object-cover"
                     />
                   </div>
-                )}
-
-                {background.type === 'gradient' && typeof background.value === 'object' && (
-                  <>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Start Color
+                ) : (
+                  <div className="text-center">
+                    <div className="w-24 h-24 bg-gray-300 dark:bg-gray-700 rounded-xl flex items-center justify-center mx-auto mb-4">
+                      <Image className="w-12 h-12 text-gray-400" />
+                    </div>
+                    <p className="text-gray-500 mb-4">Start with a template or upload an image</p>
+                    <div className="flex gap-3 justify-center">
+                      <button 
+                        onClick={() => setActiveTool('templates')}
+                        className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg"
+                      >
+                        Browse Templates
+                      </button>
+                      <label className="bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 px-4 py-2 rounded-lg cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-600">
+                        Upload Image
+                        <input 
+                          type="file" 
+                          accept="image/*" 
+                          onChange={handleImageUpload}
+                          className="hidden"
+                        />
                       </label>
-                      <input
-                        type="color"
-                        value={(background.value as any).start}
-                        onChange={(e) => setBackground({
-                          type: 'gradient',
-                          value: { ...(background.value as any), start: e.target.value }
-                        })}
-                        className="w-full h-12 rounded-lg cursor-pointer"
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Right Panel - Properties */}
+              <div className="w-72 space-y-4">
+                {/* Canvas Size */}
+                <div className="bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm">
+                  <h3 className="font-medium text-gray-900 dark:text-white mb-3">Canvas Size</h3>
+                  <div className="grid grid-cols-2 gap-2 mb-3">
+                    <div>
+                      <label className="text-xs text-gray-500">Width</label>
+                      <input 
+                        type="number" 
+                        value={canvasSize.width}
+                        onChange={(e) => setCanvasSize({...canvasSize, width: Number(e.target.value)})}
+                        className="w-full bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded px-2 py-1 text-sm"
                       />
                     </div>
-
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        End Color
-                      </label>
-                      <input
-                        type="color"
-                        value={(background.value as any).end}
-                        onChange={(e) => setBackground({
-                          type: 'gradient',
-                          value: { ...(background.value as any), end: e.target.value }
-                        })}
-                        className="w-full h-12 rounded-lg cursor-pointer"
+                      <label className="text-xs text-gray-500">Height</label>
+                      <input 
+                        type="number" 
+                        value={canvasSize.height}
+                        onChange={(e) => setCanvasSize({...canvasSize, height: Number(e.target.value)})}
+                        className="w-full bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded px-2 py-1 text-sm"
                       />
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    {presetSizes.map(preset => (
+                      <button
+                        key={preset.name}
+                        onClick={() => setCanvasSize({ width: preset.width, height: preset.height })}
+                        className={`w-full text-left px-3 py-2 rounded text-sm ${
+                          canvasSize.width === preset.width && canvasSize.height === preset.height
+                            ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-600'
+                            : 'hover:bg-gray-100 dark:hover:bg-gray-800'
+                        }`}
+                      >
+                        {preset.name}
+                        <span className="text-xs text-gray-400 ml-2">{preset.width}×{preset.height}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Quick Actions */}
+                <div className="bg-white dark:bg-gray-900 rounded-xl p-4 shadow-sm">
+                  <h3 className="font-medium text-gray-900 dark:text-white mb-3">Quick Actions</h3>
+                  <div className="space-y-2">
+                    <button 
+                      onClick={() => setActiveTool('resize')}
+                      className="w-full flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-pink-500 to-purple-600 text-white rounded-lg text-sm"
+                    >
+                      <Maximize2 className="w-4 h-4" />
+                      Magic Resize to All Platforms
+                    </button>
+                    <button 
+                      onClick={() => setActiveTool('background')}
+                      className="w-full flex items-center gap-2 px-3 py-2 bg-gray-100 dark:bg-gray-800 rounded-lg text-sm"
+                    >
+                      <Eraser className="w-4 h-4" />
+                      Remove Background
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Templates Tool */}
+          {activeTool === 'templates' && (
+            <TemplateLibrary 
+              onSelectTemplate={handleTemplateSelect}
+              userPlan="pro"
+            />
+          )}
+
+          {/* Magic Resize Tool */}
+          {activeTool === 'resize' && (
+            <MagicResize 
+              sourceImage={canvasImage}
+              onResizeComplete={handleResizeComplete}
+            />
+          )}
+
+          {/* Background Remover Tool */}
+          {activeTool === 'background' && (
+            <BackgroundRemover 
+              onImageProcessed={handleBackgroundRemoved}
+              creditsRemaining={50}
+            />
+          )}
+
+          {/* Export Tool */}
+          {activeTool === 'export' && (
+            <div className="max-w-2xl mx-auto">
+              <div className="bg-white dark:bg-gray-900 rounded-xl shadow-lg p-6">
+                <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-6">Export Your Design</h2>
+                
+                {canvasImage ? (
+                  <>
+                    <div className="aspect-video bg-gray-100 dark:bg-gray-800 rounded-lg mb-6 flex items-center justify-center overflow-hidden">
+                      <img src={canvasImage} alt="Preview" className="max-w-full max-h-full object-contain" />
+                    </div>
+                    
+                    <div className="grid grid-cols-3 gap-4">
+                      <button 
+                        onClick={() => exportCanvas('png')}
+                        className="p-4 border-2 border-gray-200 dark:border-gray-700 rounded-xl hover:border-purple-500 transition-colors text-center"
+                      >
+                        <p className="font-bold text-lg">.PNG</p>
+                        <p className="text-sm text-gray-500">Lossless, transparent</p>
+                      </button>
+                      <button 
+                        onClick={() => exportCanvas('jpg')}
+                        className="p-4 border-2 border-gray-200 dark:border-gray-700 rounded-xl hover:border-purple-500 transition-colors text-center"
+                      >
+                        <p className="font-bold text-lg">.JPG</p>
+                        <p className="text-sm text-gray-500">Smaller file size</p>
+                      </button>
+                      <button 
+                        onClick={() => exportCanvas('webp')}
+                        className="p-4 border-2 border-gray-200 dark:border-gray-700 rounded-xl hover:border-purple-500 transition-colors text-center"
+                      >
+                        <p className="font-bold text-lg">.WEBP</p>
+                        <p className="text-sm text-gray-500">Modern, optimized</p>
+                      </button>
                     </div>
                   </>
+                ) : (
+                  <div className="text-center py-12">
+                    <Image className="w-16 h-16 mx-auto text-gray-300 mb-4" />
+                    <p className="text-gray-500">Create a design first to export</p>
+                  </div>
                 )}
               </div>
             </div>
-
-            {/* Layers */}
-            <div>
-              <h3 className="text-lg font-bold text-gray-900 mb-3">Layers</h3>
-              <div className="space-y-2">
-                {elements.slice().reverse().map((element, index) => (
-                  <button
-                    key={element.id}
-                    onClick={() => setSelectedElement(element.id)}
-                    className={`w-full p-3 rounded-lg text-left transition-colors ${
-                      selectedElement === element.id
-                        ? 'bg-primary text-white'
-                        : 'bg-gray-50 hover:bg-gray-100 text-gray-900'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      {element.type === 'text' && <Type className="w-4 h-4" />}
-                      {element.type === 'image' && <ImageIcon className="w-4 h-4" />}
-                      {(element.type === 'rectangle' || element.type === 'circle') && <Square className="w-4 h-4" />}
-                      <span className="text-sm font-medium">
-                        {element.type.charAt(0).toUpperCase() + element.type.slice(1)} {elements.length - index}
-                      </span>
-                    </div>
-                  </button>
-                ))}
-                {elements.length === 0 && (
-                  <p className="text-sm text-gray-500 text-center py-4">
-                    No elements yet. Add text, images, or shapes to get started!
-                  </p>
-                )}
-              </div>
-            </div>
-          </div>
-        </aside>
+          )}
+        </div>
       </div>
+
+      <canvas ref={canvasRef} className="hidden" />
     </div>
   )
 }
